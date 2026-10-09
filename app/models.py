@@ -207,6 +207,39 @@ class TicketComment(Base):
 # Case-lookup cache
 # ---------------------------------------------------------------------------
 
+class HttpResponseCache(Base):
+    """Raw HTTP response cache (tier-2, SQLite/Postgres) for portal requests.
+
+    Backs :class:`app.services.http_cache.HttpCache` so repeated lookups for the
+    same district/court/cause-list/case pages are served locally instead of
+    hammering the government servers — over months of use the same static assets
+    (geo tree, court lists, office units) are fetched only once. Only successful
+    ``GET`` responses are stored; the per-route TTL keeps genuinely changing
+    data (today's cause list) reasonably fresh.
+    """
+
+    __tablename__ = "http_response_cache"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    url: Mapped[str] = mapped_column(String(512))
+    params_json: Mapped[str | None] = mapped_column(Text)
+    status_code: Mapped[int] = mapped_column()
+    content_type: Mapped[str | None] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+    @property
+    def is_fresh(self) -> bool:
+        if self.expires_at is None:
+            return True
+        return self.expires_at > datetime.utcnow()
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return f"<HttpResponseCache {self.key!r} status={self.status_code}>"
+
 
 class CaseQueryCache(Base):
     """Cached result of a citizen case-number lookup.

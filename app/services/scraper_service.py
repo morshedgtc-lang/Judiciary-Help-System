@@ -39,11 +39,19 @@ import os
 import random
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Mapping, Protocol, Sequence
 
 import httpx
+
+from app.services.http_cache import (
+    CachedResponse,
+    HttpCache,
+    build_cache_key,
+    ttl_for,
+)
 
 try:  # curl_cffi is optional: fall back to httpx if it is not installed.
     from curl_cffi import requests as _curl_requests
@@ -78,7 +86,9 @@ DEFAULT_TIMEOUT = 20.0
 DEFAULT_MIN_INTERVAL = 1.0
 
 # Broad office-origin ids that cover district/tribunal courts (see portal JS).
-DISTRICT_COURT_ORIGINS = "4,5,6,7,8,18,19,20,21,74,75,76,83,94,103"
+# Filtering by these office origins excluded magistrate courts (14–17, 91);
+# keep all origins so the Chief Judicial Magistrate court resolves too.
+DISTRICT_COURT_ORIGINS: str | None = None
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
@@ -144,6 +154,18 @@ def _format_date(value: date | datetime | str | None) -> str | None:
     if isinstance(value, (date, datetime)):
         return value.strftime("%d-%m-%Y")
     return str(value)
+
+
+def _fold(text: str | None) -> str:
+    """Normalise a Bengali/English name for fuzzy matching.
+
+    The portal mixes codepoint forms of Bengali ligatures (e.g. "য়" as the
+    precomposed U+09DF vs "য" + nukta U+09AF U+09BC) and stray spacing;
+    NFKC + casefold + whitespace collapse makes comparisons robust.
+    """
+    if not text:
+        return ""
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
 
 
 def _looks_blocked(status_code: int, text: str, headers: Mapping[str, str]) -> bool:
@@ -282,6 +304,7 @@ class JudiciaryScraper:
         transport: str | None = None,
         impersonate: str | None = None,
         client: httpx.Client | None = None,
+        http_cache: bool | None = None,
     ) -> None:
         self.base_url = (
             base_url or os.getenv("JUDICIARY_BASE_URL", DEFAULT_BASE_URL)
@@ -298,6 +321,18 @@ class JudiciaryScraper:
         self.backoff_factor = backoff_factor
         self.transport = (transport or os.getenv("JUDICIARY_TRANSPORT", "auto")).lower()
         self.impersonate = impersonate or os.getenv("JUDICIARY_IMPERSONATE", "chrome")
+
+        # Two-tier raw-response cache (memory LRU + SQLite), keyed by URL+params.
+        # Default on so repeat lookups don't re-hit the portal over months of use.
+        self.http_cache_enabled = (
+            os.getenv("JUDICIARY_HTTP_CACHE_ENABLED", "true").strip().lower()
+            in ("1", "true", "yes", "on")
+            if http_cache is None
+            else http_cache
+        )
+        self._http_cache = HttpCache(
+            capacity=int(os.getenv("JUDICIARY_HTTP_CACHE_CAPACITY", "256"))
+        )
 
         self._headers = {
             "User-Agent": user_agent or os.getenv("JUDICIARY_USER_AGENT", DEFAULT_USER_AGENT),
@@ -416,6 +451,66 @@ class JudiciaryScraper:
         raise last_error or ScraperError(f"Request failed: {url}")
 
     def _request(self, url: str, params: Mapping[str, Any] | None = None) -> FetchResult:
+        """Fetch ``url`` (GET), serving from the HTTP cache when possible.
+
+        On a fresh cache hit no network call happens. On any transport/server
+        failure the most recent cached copy (even expired) is returned as a
+        stale fallback so prolonged portal outages degrade gracefully.
+        """
+        cached: CachedResponse | None = None
+        if self.http_cache_enabled:
+            key = build_cache_key(url, params)
+            entry = self._http_cache.get(key)
+            if entry is not None:
+                if entry.expires_at > datetime.utcnow():
+                    logger.debug("HTTP cache hit (fresh) for %s", url)
+                    return self._from_cached(entry, url)
+                cached = entry  # expired: keep for stale fallback
+
+        try:
+            result = self._request_network(url, params)
+        except ScraperError:
+            if cached is not None:
+                logger.warning("Serving stale cached response for %s", url)
+                return self._from_cached(cached, url)
+            raise
+
+        if self.http_cache_enabled:
+            key = build_cache_key(url, params)
+            self._store_cache(key, url, params, result)
+        return result
+
+    def _from_cached(self, entry: CachedResponse, url: str) -> FetchResult:
+        return FetchResult(
+            status_code=entry.status_code,
+            text=entry.body,
+            headers={},
+            url=url,
+        )
+
+    def _store_cache(
+        self,
+        key: str,
+        url: str,
+        params: Mapping[str, Any] | None,
+        result: FetchResult,
+    ) -> None:
+        if result.status_code != 200 or not result.text.strip():
+            return
+        expires_at = datetime.utcnow() + ttl_for(url, params, datetime.utcnow())
+        self._http_cache.put(
+            key,
+            url,
+            params,
+            CachedResponse(
+                status_code=result.status_code,
+                body=result.text,
+                content_type=str(result.headers.get("content-type", "")),
+                expires_at=expires_at,
+            ),
+        )
+
+    def _request_network(self, url: str, params: Mapping[str, Any] | None = None) -> FetchResult:
         transports = self._transport_order()
         last_error: Exception | None = None
         for index, name in enumerate(transports):
@@ -470,13 +565,13 @@ class JudiciaryScraper:
 
     def search_office_units(self, query: str, *, limit: int = 25) -> list[dict[str, Any]]:
         """Substring search over all office/unit names (Bengali or English)."""
-        needle = query.strip().casefold()
+        needle = _fold(query)
         if not needle:
             return []
         results = []
         for unit in self.get_all_office_units():
-            name_bn = str(unit.get("unit_name_bng") or "").casefold()
-            name_en = str(unit.get("unit_name_eng") or "").casefold()
+            name_bn = _fold(unit.get("unit_name_bng"))
+            name_en = _fold(unit.get("unit_name_eng"))
             if needle in name_bn or needle in name_en:
                 results.append(unit)
                 if len(results) >= limit:
@@ -486,24 +581,32 @@ class JudiciaryScraper:
     def _iter_district_records(self) -> list[dict[str, Any]]:
         """Flatten the ``geo/districts`` payload.
 
-        The portal returns divisions, each wrapping a ``districts`` array, but
-        some deployments return a flat array of districts — support both.
+        The live portal returns divisions each wrapping a ``districts`` dict
+        keyed by id, but some deployments return list-shaped or flat payloads
+        — support all three.
         """
         records: list[dict[str, Any]] = []
         for group in self.get_districts() or []:
+            if not isinstance(group, dict):
+                continue
+            if "geo_district_id" in group:
+                records.append(group)  # flat record
+                continue
             nested = group.get("districts")
-            if isinstance(nested, list):
-                records.extend(nested)
-            else:
-                records.append(group)
+            if isinstance(nested, dict):
+                records.extend(
+                    value for value in nested.values() if isinstance(value, dict)
+                )
+            elif isinstance(nested, list):
+                records.extend(value for value in nested if isinstance(value, dict))
         return records
 
     def resolve_district_id(self, district_name: str) -> int | None:
         """Return the ``geo_district_id`` for a district by Bengali or English name."""
-        needle = district_name.strip().casefold()
+        needle = _fold(district_name)
         for district in self._iter_district_records():
-            name_bn = str(district.get("district_name_bng") or "").casefold()
-            name_en = str(district.get("district_name_eng") or "").casefold()
+            name_bn = _fold(district.get("district_name_bng"))
+            name_en = _fold(district.get("district_name_eng"))
             if needle in name_bn or needle in name_en:
                 district_id = district.get("geo_district_id")
                 return int(district_id) if district_id is not None else None
@@ -515,7 +618,11 @@ class JudiciaryScraper:
         *,
         office_origin_id: int | str | Sequence[int | str] | None = DISTRICT_COURT_ORIGINS,
     ) -> list[dict[str, Any]]:
-        """List courts for a district, resolved by district name."""
+        """List courts for a district, resolved by district name.
+
+        ``office_origin_id`` defaults to ``None`` (all origins) so magistrate
+        courts are included; pass a value to restrict.
+        """
         district_id = self.resolve_district_id(district_name)
         if district_id is None:
             raise ScraperNotFound(f"Unknown district: {district_name!r}")
@@ -532,15 +639,16 @@ class JudiciaryScraper:
 
         Returns the first match; ``None`` when nothing matches. Raises
         :class:`ScraperNotFound` when the district itself is unknown.
+        ``office_origin_id`` defaults to ``None`` (all origins).
         """
         courts = self.list_courts(district_name, office_origin_id=office_origin_id)
         if not court_name:
             return int(courts[0]["id"]) if courts else None
 
-        needle = court_name.strip().casefold()
+        needle = _fold(court_name)
         for court in courts:
-            name_bn = str(court.get("office_name_bng") or "").casefold()
-            name_en = str(court.get("office_name_eng") or "").casefold()
+            name_bn = _fold(court.get("office_name_bng"))
+            name_en = _fold(court.get("office_name_eng"))
             if needle in name_bn or needle in name_en:
                 return int(court["id"])
         return None
@@ -575,13 +683,26 @@ class JudiciaryScraper:
         ).text
 
     def fetch_case_detail(
-        self, *, court_id: int | str, case_type: int | str, case_id: str
+        self,
+        *,
+        court_id: int | str,
+        case_type: int | str,
+        case_id: str,
+        case_no: str | None = None,
     ) -> str:
-        """Fetch the detail HTML for a single case."""
-        return self._request(
-            f"{self.base_url}/caseinfo",
-            {"courtId": court_id, "case_type": case_type, "id": case_id},
-        ).text
+        """Fetch the detail HTML for a single case.
+
+        The portal only renders the hearing-history (and state fields) when the
+        bare ``caseno`` (e.g. ``1153/2025``) is also submitted.
+        """
+        params: dict[str, Any] = {
+            "courtId": court_id,
+            "case_type": case_type,
+            "id": case_id,
+        }
+        if case_no:
+            params["caseno"] = case_no
+        return self._request(f"{self.base_url}/caseinfo", params).text
 
     def fetch(self, url: str, params: Mapping[str, Any] | None = None) -> str:
         """Fetch an arbitrary portal path (relative to ``base_url``) as HTML."""

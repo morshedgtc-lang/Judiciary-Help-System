@@ -36,8 +36,19 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] Tests (parser, scraper fallback, PII redaction, cache, lookup orchestration)
 - [x] Deploy artifacts in `deploy/` (Dockerfile, Procfile, notes) + `.dockerignore`
 
+## Phase 5 — Live validation & resilience
+- [x] Live end-to-end lookup vs the real portal (Chandpur, CJM court id 930,
+      case `সি. আর. মামলা - ৬৩১/২০২৫` → found, status, next hearing)
+- [x] Case-number search formats (only bare `serial/year`, Latin + Bengali digits)
+- [x] Detail-page parsing: hearing-history table + identity row, `caseno` required
+- [x] Cause-list marquee/table disambiguation (`_data_table`)
+- [x] Unicode folding for precomposed/composed Bengali (NFKC) + dict-shaped districts
+- [x] Raw-HTTP response cache (`app/services/http_cache.py`): tiered memory-LRU +
+      `http_response_cache` table; route-aware TTLs (30d masters / 30min today's
+      cause list / 24h caseinfo); stale fallback on outage
+- [x] Cache unit tests (`tests/test_http_cache.py`) + live cache verification
+
 ## Backlog
-- Introduce Alembic migrations before any schema changes in production.
-- Live end-to-end validation against the real portal (courtId resolution, case
-  detail page layout) once deployed with a reachable network.
-- Verify cause-list `date` parameter digit format (Latin vs Bengali) live.
+- Introduce Alembic migrations before any schema changes in production
+  (`http_response_cache` table is auto-created via `init_db` today).
+- Scheduled cleanup of expired `http_response_cache` rows (max-age sweep).

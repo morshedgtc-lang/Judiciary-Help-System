@@ -92,3 +92,40 @@ def test_parse_case_detail_label_values() -> None:
     assert detail.court_name == "CJM"
     assert detail.fields["অবস্থা"] == "চলমান"
     assert detail.fields["পরবর্তী তারিখ"] == "১৫/১০/২০২৬"
+
+
+def test_parse_case_detail_hearing_table() -> None:
+    html = """
+    <div class="office-unit-name">চীফ জুডিসিয়াল ম্যাজিস্ট্রেট আদালত, চাঁদপুর</div>
+    <table>
+      <tr>
+        <td>মামলার নম্বর: সি. আর. মামলা - ১১৫৩/২০২৫ (চাঁদপুর সদর) দায়েরের তারিখ: ০৮-১০-২০২৫ খ্রিঃ</td>
+        <td>বাদী/অভিযোগকারী/দরখাস্তকারী/আপীলকারী: মোঃ হানিফ মিজি</td>
+        <td>বিবাদী/আসামী/রেস্পন্ডেন্ট/প্রতিপক্ষ: ইয়াছিন আরাফাত</td>
+      </tr>
+      <tr><th>শুনানির তারিখ</th><th>কার্যক্রম</th><th>সংক্ষিপ্ত আদেশ</th><th>মামলার অবস্থা</th></tr>
+      <tr><td>০৮-১০-২০২৫ খ্রিঃ</td><td>নতুন মামলা</td><td>চার্জ শুনানী</td><td>চলমান</td></tr>
+      <tr><td>১২-০৭-২০২৬ খ্রিঃ</td><td>চার্জ শুনানী</td><td>চার্জ শুনানী</td><td>চলমান</td></tr>
+      <tr><td>০৮-১০-২০২৬ খ্রিঃ</td><td>চার্জ শুনানী</td><td></td><td>চলমান</td></tr>
+    </table>
+    """
+    detail = P.parse_case_detail(html)
+    assert detail.fields["মামলার নম্বর"] == "সি. আর. মামলা - ১১৫৩/২০২৫ (চাঁদপুর সদর)"
+    assert detail.fields["দায়েরের তারিখ"] == "০৮-১০-২০২৫ খ্রিঃ"
+    assert detail.fields["বাদী"] == "মোঃ হানিফ মিজি"
+    assert detail.fields["বিবাদী"] == "ইয়াছিন আরাফাত"
+    assert detail.fields["পরবর্তী তারিখ"] == "০৮-১০-২০২৬ খ্রিঃ"
+    assert detail.fields["কার্যক্রম"] == "চার্জ শুনানী"
+    assert detail.fields["সংক্ষিপ্ত আদেশ"] == ""
+    assert detail.fields["অবস্থা"] == "চলমান"
+    history = detail.sections["শুনানির ইতিহাস"]
+    assert len(history) == 3
+    assert history["১২-০৭-২০২৬ খ্রিঃ"] == "চার্জ শুনানী | চার্জ শুনানী | চলমান"
+
+
+def test_portal_caseno() -> None:
+    assert P.portal_caseno("সি. আর. মামলা - ১১৫৩/২০২৫ (চাঁদপুর সদর)") == "1153/2025"
+    assert P.portal_caseno("CR-1153/2025") == "1153/2025"
+    assert P.portal_caseno("মামলা নং ১২৩/২০২৪") == "123/2024"
+    assert P.portal_caseno(None) is None
+    assert P.portal_caseno("অজানা") is None

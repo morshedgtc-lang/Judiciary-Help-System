@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     judiciary_default_court: str = "চীফ জুডিসিয়াল"
     # How long a cached case lookup stays fresh (minutes).
     judiciary_cache_ttl_minutes: int = 360
+    # Raw-HTTP response cache (see app.services.http_cache): master data is
+    # cached ~30 days, today's cause list 30 minutes, caseinfo 24 hours.
+    judiciary_http_cache_enabled: bool = True
+    judiciary_http_cache_capacity: int = 256
 
     @field_validator("database_url")
     @classmethod

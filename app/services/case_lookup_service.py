@@ -226,6 +226,61 @@ def _store(
     db.commit()
 
 
+def _search_candidates(
+    request: CaseLookupRequest, parsed: ParsedCaseNumber | None
+) -> list[str]:
+    """Ordered ``caseno`` query forms the portal search accepts.
+
+    Live probing showed prefix-styled forms ("সি.আর. 844/2023", "CR-844/2023")
+    return zero rows — only bare ``serial/year`` (latin or Bengali digits)
+    matches. Try the raw request first, then the normalized form, then bare
+    ``serial/year`` in Latin then Bengali digits.
+    """
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str | None) -> None:
+        if not value:
+            return
+        folded = " ".join(value.strip().casefold().split())
+        if folded and folded not in seen:
+            seen.add(folded)
+            candidates.append(value)
+
+    add(request.case_number)
+    add(parsed.normalized if parsed else None)
+    if parsed and parsed.serial:
+        bare = f"{parsed.serial}/{parsed.year}" if parsed.year else str(parsed.serial)
+        add(bare)
+        add(parser_service.en_to_bn_digits(bare))
+    return candidates
+
+
+def _matches_entry(
+    entry: parser_service.CaseListEntry,
+    target: str,
+    parsed: ParsedCaseNumber | None,
+) -> bool:
+    """Return whether a search row truly corresponds to the requested case.
+
+    Never fall back to an unrelated row: exact normalized equality wins; a
+    bare ``serial/year`` comparison covers rows the portal formats differently
+    (e.g. with a thana suffix) that normalise to different prefixes.
+    """
+    if not entry.case_number:
+        return False
+    if parser_service.normalize_case_number(entry.case_number) == target:
+        return True
+    if parsed and parsed.serial:
+        entry_parsed = parser_service.parse_case_number(entry.case_number)
+        if entry_parsed and entry_parsed.serial:
+            return (
+                entry_parsed.serial == parsed.serial
+                and entry_parsed.year == parsed.year
+            )
+    return False
+
+
 def lookup_case(
     db: Session,
     request: CaseLookupRequest,
@@ -283,18 +338,23 @@ def lookup_case(
                 fetched_at=_utcnow(),
             )
 
-        page = parser_service.parse_case_list(
-            scraper.fetch_case_info(court_id, request.case_number)
-        )
+        page: parser_service.CaseListPage | None = None
+        for candidate in _search_candidates(request, parsed):
+            page = parser_service.parse_case_list(
+                scraper.fetch_case_info(court_id, candidate)
+            )
+            if page.entries:
+                break
+        if page is None or not page.entries:
+            page = page or parser_service.CaseListPage()
         target = parsed.normalized or request.case_number
         entry = next(
             (
                 item
                 for item in page.entries
-                if parser_service.normalize_case_number(item.case_number or "")
-                == target
+                if _matches_entry(item, target, parsed)
             ),
-            page.entries[0] if page.entries else None,
+            None,
         )
 
         detail = None
@@ -304,6 +364,9 @@ def lookup_case(
                     court_id=entry.court_id or court_id,
                     case_type=entry.case_type_id or "",
                     case_id=entry.case_id,
+                    case_no=parser_service.portal_caseno(
+                        entry.case_number or entry.case_number_raw
+                    ),
                 )
             )
 

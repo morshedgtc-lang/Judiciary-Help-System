@@ -13,7 +13,7 @@ Set these in your platform (never commit real secrets):
   **not** for multi-replica production.
 - `CORS_ORIGINS` — comma-separated origins that may call the API.
 - Optional scraper tuning: `JUDICIARY_MIN_INTERVAL`, `JUDICIARY_TIMEOUT`,
-  `JUDICIARY_TRANSPORT`, `JUDICIARY_CACHE_TTL_MINUTES`.
+  `JUDICIARY_TRANSPORT`, `JUDICIARY_CACHE_TTL_MINUTES`, `JUDICIARY_HTTP_CACHE_ENABLED`.
 
 Schema is created automatically on startup (dev convenience). For production,
 introduce Alembic migrations before changing models.

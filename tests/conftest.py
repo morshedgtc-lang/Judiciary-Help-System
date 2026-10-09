@@ -19,6 +19,9 @@ _DB_PATH = (Path(_TMP_DIR) / "test.db").as_posix()
 os.environ["DATABASE_URL"] = f"sqlite:///{_DB_PATH}"
 os.environ.setdefault("JUDICIARY_MIN_INTERVAL", "0")
 os.environ.setdefault("SQL_ECHO", "false")
+# Existing tests exercise the transport directly; the raw-HTTP cache is opt-in
+# and covered by dedicated tests (test_http_cache.py).
+os.environ.setdefault("JUDICIARY_HTTP_CACHE_ENABLED", "false")
 
 from sqlalchemy.orm import Session  # noqa: E402
 

@@ -89,12 +89,22 @@ Environment variables (see `.env.example`):
 | `JUDICIARY_TRANSPORT` | `auto` | `auto` \| `curl_cffi` \| `httpx` |
 | `JUDICIARY_DEFAULT_DISTRICT` | `Chandpur` | Default district |
 | `JUDICIARY_DEFAULT_COURT` | `চীফ জুডিসিয়াল` | Default court name |
-| `JUDICIARY_CACHE_TTL_MINUTES` | `360` | Cache freshness window |
+| `JUDICIARY_CACHE_TTL_MINUTES` | `360` | Cache freshness window (lookup results) |
+| `JUDICIARY_HTTP_CACHE_ENABLED` | `true` | Raw portal-response cache on/off |
+| `JUDICIARY_HTTP_CACHE_CAPACITY` | `256` | Max in-memory cache entries |
+
+The raw-response cache (`app/services/http_cache.py`) reroutes *all* portal page
+requests: geo/court/office-unit master data is cached for **30 days**, past
+cause lists for 30 days, today's cause list for **30 minutes**, and `caseinfo`
+pages for 24 hours (route-aware TTLs in `ttl_for`). It is tiered — a bounded
+in-memory LRU backed by the persistent `http_response_cache` table — so repeat
+lookups over months of use never re-hit the portal, and during a portal outage
+the last known response is served as a stale fallback.
 
 ## Tests
 
 ```bash
-python -m pytest          # 33 offline tests, no network required
+python -m pytest          # offline tests, no network required
 ruff check app tests
 ```
 
