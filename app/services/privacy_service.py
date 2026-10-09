@@ -25,6 +25,13 @@ PLACEHOLDERS: dict[str, str] = {
     "bank_account": "[ACCOUNT_REDACTED]",
 }
 
+# Bengali digits -> ASCII, applied to a same-length copy so regex spans map
+# 1:1 back onto the original text. Portals here are Bengali-numeral heavy, so
+# matching raw text would silently miss most phone numbers and NIDs.
+_BN_DIGITS = "০১২৩৪৫৬৭৮৯"
+_EN_DIGITS = "0123456789"
+_BN_TO_EN = str.maketrans(_BN_DIGITS, _EN_DIGITS)
+
 # -- patterns (BD-aware, order of application matters) ----------------------
 
 _PHONE = re.compile(
@@ -67,11 +74,23 @@ class RedactionResult:
 def _apply(
     text: str, pattern: re.Pattern[str], kind: str, counts: dict[str, int]
 ) -> str:
-    def _replace(_match: re.Match[str]) -> str:
-        counts[kind] = counts.get(kind, 0) + 1
-        return PLACEHOLDERS[kind]
+    # Match against a digit-normalized, same-length view so Bengali numerals are
+    # caught too; spans are valid on the original string because translation is
+    # strictly one character to one character.
+    normalized = text.translate(_BN_TO_EN)
+    matches = list(pattern.finditer(normalized))
+    if not matches:
+        return text
 
-    return pattern.sub(_replace, text)
+    pieces: list[str] = []
+    cursor = 0
+    for match in matches:
+        pieces.append(text[cursor : match.start()])
+        pieces.append(PLACEHOLDERS[kind])
+        cursor = match.end()
+        counts[kind] = counts.get(kind, 0) + 1
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 def redact(text: str | None) -> RedactionResult:
