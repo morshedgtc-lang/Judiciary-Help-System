@@ -259,14 +259,14 @@ def lookup_case(
         return _cached_response(cache_row, request, cached=True, source="cache")
 
     owns_scraper = scraper is None
-    scraper = scraper or JudiciaryScraper(
-        base_url=settings.judiciary_base_url,
-        timeout=settings.judiciary_timeout,
-        min_interval=settings.judiciary_min_interval,
-    )
 
     try:
         if owns_scraper:
+            scraper = JudiciaryScraper(
+                base_url=settings.judiciary_base_url,
+                timeout=settings.judiciary_timeout,
+                min_interval=settings.judiciary_min_interval,
+            )
             scraper.__enter__()
 
         court_id, court_name = _resolve_court(scraper, request)
@@ -372,5 +372,5 @@ def lookup_case(
             fetched_at=_utcnow(),
         )
     finally:
-        if owns_scraper:
+        if owns_scraper and scraper is not None:
             scraper.close()

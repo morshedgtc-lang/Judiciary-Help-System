@@ -32,6 +32,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] `static/app.js`: lookup form + result rendering
 
 ## Phase 4 — Docs, tests, deploy
-- [ ] `README.md`: setup, legal disclaimers, overview
-- [ ] Tests (parser, scraper fallback, PII redaction, cache)
-- [ ] Deploy artifacts in `deploy/`
+- [x] `README.md`: setup, architecture, legal disclaimers, configuration
+- [x] Tests (parser, scraper fallback, PII redaction, cache, lookup orchestration)
+- [x] Deploy artifacts in `deploy/` (Dockerfile, Procfile, notes) + `.dockerignore`
+
+## Backlog
+- Introduce Alembic migrations before any schema changes in production.
+- Live end-to-end validation against the real portal (courtId resolution, case
+  detail page layout) once deployed with a reachable network.
+- Verify cause-list `date` parameter digit format (Latin vs Bengali) live.
