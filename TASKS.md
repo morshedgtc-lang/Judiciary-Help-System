@@ -20,14 +20,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## Phase 2 — Services
 - [x] `services/parser_service.py`: case-number regex engine (CR/GR/Civil/Criminal + year)
-- [ ] `services/scraper_service.py`: curl_cffi + httpx fallback, sessions, Cloudflare handling
-- [ ] `services/explainer_service.py`: plain Bangla/English explanations
+- [x] `services/scraper_service.py`: curl_cffi + httpx fallback, sessions, Cloudflare handling
+- [x] `services/explainer_service.py`: plain Bangla/English explanations
 - [x] Privacy guardrails: PII redaction/sanitization (`services/privacy_service.py`)
+- [x] Case-lookup orchestration service (scrape -> parse -> cache -> explain)
 
 ## Phase 3 — Web app
-- [ ] `main.py`: routes, CORS, lifespan, template/static mounting
-- [ ] `templates/index.html`: Tailwind responsive UI
-- [ ] `static/`: CSS/JS assets
+- [x] `main.py`: routes, CORS, lifespan, template/static mounting
+- [x] `routers/case_lookup.py`: POST + GET `/api/v1/cases/lookup`
+- [x] `templates/index.html`: Tailwind responsive bilingual UI
+- [x] `static/app.js`: lookup form + result rendering
 
 ## Phase 4 — Docs, tests, deploy
 - [ ] `README.md`: setup, legal disclaimers, overview

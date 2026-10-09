@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ project_name }} — মামলার তথ্য</title>
+  <meta name="description" content="মামলা নম্বর দিয়ে সহজ ভাষায় মামলার তথ্য, পরবর্তী তারিখ ও প্রয়োজনীয় পদক্ষেপ জানুন।" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            bn: ['"Noto Sans Bengali"', 'sans-serif'],
+            en: ['Inter', 'sans-serif'],
+          },
+          colors: { brand: { DEFAULT: '#0f766e', dark: '#115e59' } },
+        },
+      },
+    };
+  </script>
+</head>
+<body class="min-h-screen bg-slate-50 font-bn text-slate-800">
+  <header class="bg-brand text-white shadow">
+    <div class="mx-auto flex max-w-4xl items-center justify-between px-4 py-4">
+      <div>
+        <h1 class="text-lg font-bold sm:text-xl">{{ project_name }}</h1>
+        <p class="text-xs text-teal-100 sm:text-sm">বাংলাদেশ বিচার বিভাগ — নাগরিক সেবা</p>
+      </div>
+      <select id="language" class="rounded-md border-0 bg-teal-800 px-3 py-2 text-sm text-white focus:ring-2 focus:ring-white">
+        <option value="bn">বাংলা</option>
+        <option value="en">English</option>
+      </select>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-4xl px-4 py-8">
+    <section class="rounded-xl bg-white p-5 shadow-sm sm:p-6">
+      <h2 class="text-base font-semibold text-slate-900 sm:text-lg">মামলা নম্বর দিয়ে খুঁজুন</h2>
+      <p class="mt-1 text-sm text-slate-500">
+        উদাহরণ: <code class="rounded bg-slate-100 px-1">সি.আর. ৮৪৪/২০২৩</code>,
+        <code class="rounded bg-slate-100 px-1">জি.আর. ১৩৭/২০২৬</code>,
+        <code class="rounded bg-slate-100 px-1">844/2023</code>
+      </p>
+
+      <form id="lookup-form" class="mt-5 grid gap-4 sm:grid-cols-2">
+        <label class="block sm:col-span-2">
+          <span class="mb-1 block text-sm font-medium">মামলা নম্বর</span>
+          <input id="case_number" name="case_number" required maxlength="64"
+            class="w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+            placeholder="যেমন: সি.আর. ৮৪৪/২০২৩" />
+        </label>
+        <label class="block">
+          <span class="mb-1 block text-sm font-medium">আদালত (ঐচ্ছিক)</span>
+          <input id="court" name="court" maxlength="200"
+            class="w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+            placeholder="যেমন: চীফ জুডিসিয়াল ম্যাজিস্ট্রেট, চাঁদপুর" />
+        </label>
+        <label class="block">
+          <span class="mb-1 block text-sm font-medium">আদালত আইডি (ঐচ্ছিক)</span>
+          <input id="court_id" name="court_id" type="number" min="1"
+            class="w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+            placeholder="courtId" />
+        </label>
+        <div class="flex items-center gap-2 sm:col-span-2">
+          <input id="force_refresh" type="checkbox" class="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand" />
+          <label for="force_refresh" class="text-sm text-slate-600">নতুন করে সার্ভার থেকে আনুন (ক্যাশ এড়িয়ে)</label>
+        </div>
+        <div class="sm:col-span-2">
+          <button type="submit" id="submit-btn"
+            class="w-full rounded-lg bg-brand px-4 py-2.5 font-semibold text-white transition hover:bg-brand-dark disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto">
+            খুঁজুন
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <div id="status" class="mt-4 hidden rounded-lg px-4 py-3 text-sm"></div>
+    <section id="results" class="mt-6 space-y-4"></section>
+
+    <footer class="mt-10 border-t border-slate-200 pt-4 text-xs text-slate-500">
+      <p>এটি একটি স্বাধীন নাগরিক সেবা; সরকারি ওয়েবসাইটের তথ্যের সহজ ব্যাখ্যা প্রদান করে। ব্যক্তিগত তথ্য স্বয়ংক্রিয়ভাবে মাস্ক করা হয়।</p>
+      <p class="mt-1">হেল্পলাইন: ০১৩৩৫১৪৫০২৭ · সংস্করণ {{ version }}</p>
+    </footer>
+  </main>
+
+  <script>window.API_PREFIX = "{{ api_prefix }}";</script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

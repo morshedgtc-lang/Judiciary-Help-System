@@ -14,6 +14,7 @@ composed at the router layer, e.g.::
 """
 
 from app.services import (
+    case_lookup_service,
     explainer_service,
     parser_service,
     privacy_service,
@@ -21,6 +22,7 @@ from app.services import (
 )
 
 __all__ = [
+    "case_lookup_service",
     "explainer_service",
     "parser_service",
     "privacy_service",

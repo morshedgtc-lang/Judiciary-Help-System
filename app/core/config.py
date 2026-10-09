@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     judiciary_base_url: str = "https://causelist.judiciary.gov.bd"
     judiciary_min_interval: float = 1.0
     judiciary_timeout: float = 20.0
+    # Default locality/court used when a lookup request omits them.
+    judiciary_default_district: str = "Chandpur"
+    judiciary_default_court: str = "চীফ জুডিসিয়াল"
+    # How long a cached case lookup stays fresh (minutes).
+    judiciary_cache_ttl_minutes: int = 360
 
     @field_validator("database_url")
     @classmethod
