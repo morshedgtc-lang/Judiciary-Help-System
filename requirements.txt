@@ -1,0 +1,35 @@
+# Judiciary Help System — Python dependencies
+# Python 3.11+ (developed against 3.13)
+# Install:  python -m pip install -r requirements.txt
+
+# --- Web framework ---
+fastapi~=0.115.0
+uvicorn[standard]~=0.32.0
+python-multipart~=0.0.12          # form fields & file uploads
+
+# --- Validation & settings ---
+pydantic~=2.9.0
+pydantic-settings~=2.6.0          # typed settings loaded from env/.env
+email-validator~=2.2.0            # required for pydantic EmailStr
+python-dotenv~=1.0.0
+
+# --- Database ---
+SQLAlchemy~=2.0.36
+alembic~=1.13.0                   # schema migrations
+# psycopg2-binary~=2.9.10         # uncomment when DATABASE_URL points at PostgreSQL
+# aiosqlite~=0.20.0               # uncomment for async SQLite (optional)
+
+# --- Authentication & security ---
+python-jose[cryptography]~=3.3.0  # JWT encoding/decoding
+passlib[bcrypt]~=1.7.4
+bcrypt~=4.2.0                     # pinned: passlib 1.7.4 breaks on bcrypt >= 4.1
+
+# --- Scraping: Bangladesh judiciary e-services ---
+beautifulsoup4~=4.12.0            # HTML parsing
+lxml~=5.3.0                       # fast parser backend for BeautifulSoup
+
+# --- Testing & quality ---
+pytest~=8.3.0
+pytest-cov~=6.0.0
+httpx~=0.27.0                     # HTTP client (scraper) + Starlette TestClient
+ruff~=0.7.0                       # lint + format

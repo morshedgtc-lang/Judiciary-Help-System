@@ -1,0 +1,510 @@
+"""Parsing layer for the Bangladesh judiciary e-services (cause list) portal.
+
+Turns raw HTML/JSON fetched by :mod:`app.services.scraper_service` into typed,
+immutable Python structures. No network access happens here, which makes every
+function easy to unit-test against saved fixtures.
+
+Target endpoints (all on ``causelist.judiciary.gov.bd``):
+
+* ``/api?path=geo/divisions``            -> JSON, list of divisions
+* ``/api?path=geo/districts``            -> JSON, divisions each with ``districts``
+* ``/api?path=courts``                   -> JSON, list of offices (courts)
+* ``/api?path=office/allOfficeUnitName`` -> JSON, flat list of office units
+* ``/causelist?courtId=&date=``          -> HTML, daily cause list table
+* ``/caseinfo?courtId=&caseno=``         -> HTML, case search results table
+* ``/caseinfo?courtId=&case_type=&id=``  -> HTML, single case detail page
+
+The portal renders dates and numbers in Bengali (e.g. ``০৯-১০-২০২৬``); helpers
+here normalise them to ASCII so downstream code works with plain ``date``/``int``.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+from bs4 import BeautifulSoup, Tag
+
+__all__ = [
+    "bn_to_en_digits",
+    "en_to_bn_digits",
+    "parse_bn_date",
+    "clean_text",
+    "Division",
+    "District",
+    "Court",
+    "OfficeUnit",
+    "parse_divisions",
+    "parse_districts",
+    "parse_courts",
+    "parse_office_units",
+    "CauseListEntry",
+    "CauseListPage",
+    "parse_cause_list",
+    "CaseListEntry",
+    "CaseListPage",
+    "parse_case_list",
+    "CaseDetailField",
+    "CaseDetail",
+    "parse_case_detail",
+    "parse_case_detail_url",
+]
+
+# ---------------------------------------------------------------------------
+# Bengali <-> ASCII numeral helpers
+# ---------------------------------------------------------------------------
+
+_BN_DIGITS = "০১২৩৪৫৬৭৮৯"
+_EN_DIGITS = "0123456789"
+_BN_TO_EN = str.maketrans(_BN_DIGITS, _EN_DIGITS)
+_EN_TO_BN = str.maketrans(_EN_DIGITS, _BN_DIGITS)
+
+_DATE_RE = re.compile(r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})")
+
+
+def bn_to_en_digits(text: str | None) -> str:
+    """Convert Bengali numerals in ``text`` to ASCII digits."""
+    return text.translate(_BN_TO_EN) if text else ""
+
+
+def en_to_bn_digits(text: str | None) -> str:
+    """Convert ASCII digits in ``text`` to Bengali numerals."""
+    return text.translate(_EN_TO_BN) if text else ""
+
+
+def clean_text(node: str | Tag | None) -> str:
+    """Collapse whitespace and strip a string or tag's text; ``""`` for None."""
+    if node is None:
+        return ""
+    text = node.get_text(" ", strip=True) if isinstance(node, Tag) else str(node)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def parse_bn_date(text: str | None) -> date | None:
+    """Parse a Bengali or ASCII ``dd-mm-yyyy`` date, e.g. ``০৯-১০-২০২৬``."""
+    if not text:
+        return None
+    match = _DATE_RE.search(bn_to_en_digits(text))
+    if not match:
+        return None
+    day, month, year = (int(part) for part in match.groups())
+    if year < 100:  # two-digit years are 20xx here
+        year += 2000
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# JSON API models
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Division:
+    id: int
+    name_bn: str | None = None
+    name_en: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class District:
+    id: int
+    name_bn: str | None = None
+    name_en: str | None = None
+    division_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Court:
+    id: int
+    name_bn: str | None = None
+    name_en: str | None = None
+    district_id: int | None = None
+    office_origin_id: int | None = None
+    office_layer_id: int | None = None
+    parent_office_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OfficeUnit:
+    id: int
+    name_bn: str | None = None
+    name_en: str | None = None
+
+
+def _coerce_json(data: str | bytes | list | dict) -> Any:
+    """Return parsed JSON from a raw body or an already-decoded object.
+
+    The portal occasionally returns a JSON-*encoded string*, so decode twice.
+    """
+    if isinstance(data, (bytes, str)):
+        parsed = json.loads(data)
+    else:
+        parsed = data
+    if isinstance(parsed, str):
+        parsed = json.loads(parsed)
+    return parsed
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_divisions(data: str | bytes | list | dict) -> list[Division]:
+    """Parse the ``geo/divisions`` response."""
+    items = _coerce_json(data) or []
+    return [
+        Division(
+            id=_int_or_none(item.get("geo_division_id")) or 0,
+            name_bn=item.get("division_name_bng"),
+            name_en=item.get("division_name_eng"),
+        )
+        for item in items
+    ]
+
+
+def parse_districts(data: str | bytes | list | dict) -> list[District]:
+    """Parse the ``geo/districts`` response (divisions wrapping ``districts``)."""
+    groups = _coerce_json(data) or []
+    districts: list[District] = []
+    for group in groups:
+        division_id = _int_or_none(group.get("geo_division_id") or group.get("division_id"))
+        for item in group.get("districts", []):
+            districts.append(
+                District(
+                    id=_int_or_none(item.get("geo_district_id")) or 0,
+                    name_bn=item.get("district_name_bng"),
+                    name_en=item.get("district_name_eng"),
+                    division_id=division_id,
+                )
+            )
+    return districts
+
+
+def parse_courts(data: str | bytes | list | dict) -> list[Court]:
+    """Parse the ``courts`` response."""
+    items = _coerce_json(data) or []
+    return [
+        Court(
+            id=_int_or_none(item.get("id")) or 0,
+            name_bn=item.get("office_name_bng"),
+            name_en=item.get("office_name_eng"),
+            district_id=_int_or_none(item.get("geo_district_id")),
+            office_origin_id=_int_or_none(item.get("office_origin_id")),
+            office_layer_id=_int_or_none(item.get("office_layer_id")),
+            parent_office_id=_int_or_none(item.get("parent_office_id")),
+        )
+        for item in items
+    ]
+
+
+def parse_office_units(data: str | bytes | list | dict) -> list[OfficeUnit]:
+    """Parse the ``office/allOfficeUnitName`` autocomplete response."""
+    items = _coerce_json(data) or []
+    units: list[OfficeUnit] = []
+    for item in items:
+        unit_id = _int_or_none(item.get("id"))
+        if unit_id is None:
+            continue
+        units.append(
+            OfficeUnit(
+                id=unit_id,
+                name_bn=item.get("unit_name_bng"),
+                name_en=item.get("unit_name_eng"),
+            )
+        )
+    return units
+
+
+# ---------------------------------------------------------------------------
+# Cause list (daily কার্যতালিকা)
+# ---------------------------------------------------------------------------
+
+# Column-header aliases -> canonical field names.
+_CAUSE_HEADER_FIELDS: dict[str, str] = {
+    "ক্রমিক নং": "serial_no",
+    "ক্রমিক নম্বর": "serial_no",
+    "serial": "serial_no",
+    "serial no": "serial_no",
+    "মামলার নম্বর": "case_number",
+    "মামলা নম্বর": "case_number",
+    "case no": "case_number",
+    "case number": "case_number",
+    "কার্যক্রম": "proceedings",
+    "proceedings": "proceedings",
+    "পরবর্তী তারিখ": "next_date",
+    "next date": "next_date",
+    "সংক্ষিপ্ত আদেশ": "order_summary",
+    "order": "order_summary",
+    "short order": "order_summary",
+}
+_CAUSE_POSITIONAL = ["serial_no", "case_number", "proceedings", "next_date", "order_summary"]
+
+
+@dataclass(frozen=True, slots=True)
+class CauseListEntry:
+    serial_no: str | None = None
+    case_number: str | None = None
+    proceedings: str | None = None
+    next_date: date | None = None
+    next_date_raw: str | None = None
+    order_summary: str | None = None
+    detail_url: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CauseListPage:
+    court_name: str | None = None
+    cause_date: date | None = None
+    cause_date_raw: str | None = None
+    entries: list[CauseListEntry] = field(default_factory=list)
+
+
+def _canonical_field(header: str) -> str | None:
+    return _CAUSE_HEADER_FIELDS.get(header.lower().strip())
+
+
+def _map_cells(headers: list[str], values: list[str]) -> dict[str, str]:
+    """Map a table row to field names, preferring headers, falling back to order."""
+    if headers and any(_canonical_field(h) for h in headers):
+        row: dict[str, str] = {}
+        for header, value in zip(headers, values):
+            field_name = _canonical_field(header)
+            if field_name and field_name not in row:
+                row[field_name] = value
+        return row
+    return {
+        field_name: values[index]
+        for index, field_name in enumerate(_CAUSE_POSITIONAL)
+        if index < len(values)
+    }
+
+
+def parse_cause_list(html: str | bytes) -> CauseListPage:
+    """Parse a ``/causelist`` page into a :class:`CauseListPage`."""
+    soup = BeautifulSoup(html, "lxml")
+
+    court_name = clean_text(soup.select_one(".office-unit-name")) or None
+
+    cause_date_raw = clean_text(soup.select_one(".cause-date")) or None
+    if cause_date_raw:
+        # Strip the leading "তারিখঃ" / "Date:" label if present.
+        cause_date_raw = re.sub(r"^(তারিখ[:ঃ]?|date\s*:?)\s*", "", cause_date_raw, flags=re.I)
+    cause_date = parse_bn_date(cause_date_raw)
+
+    entries: list[CauseListEntry] = []
+    table = soup.select_one("table")
+    if table is not None:
+        headers = [clean_text(th) for th in table.select("thead th")]
+        for row in table.select("tbody tr"):
+            cells = row.find_all(["td", "th"])
+            if not cells:
+                continue
+            values = [clean_text(cell) for cell in cells]
+            if not any(values):
+                continue
+            mapped = _map_cells(headers, values)
+            next_raw = mapped.get("next_date")
+            anchor = row.find("a", href=True)
+            entries.append(
+                CauseListEntry(
+                    serial_no=mapped.get("serial_no") or None,
+                    case_number=mapped.get("case_number") or None,
+                    proceedings=mapped.get("proceedings") or None,
+                    next_date=parse_bn_date(next_raw),
+                    next_date_raw=next_raw or None,
+                    order_summary=mapped.get("order_summary") or None,
+                    detail_url=anchor["href"] if anchor else None,
+                )
+            )
+
+    return CauseListPage(
+        court_name=court_name,
+        cause_date=cause_date,
+        cause_date_raw=cause_date_raw,
+        entries=entries,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Case search results (মামলা অনুসন্ধান -> /caseinfo?courtId=&caseno=)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CaseListEntry:
+    serial_no: str | None = None
+    case_type: str | None = None
+    case_number: str | None = None
+    case_number_raw: str | None = None
+    upazila: str | None = None
+    plaintiff: str | None = None
+    defendant: str | None = None
+    detail_url: str | None = None
+    court_id: int | None = None
+    case_type_id: int | None = None
+    case_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CaseListPage:
+    court_name: str | None = None
+    entries: list[CaseListEntry] = field(default_factory=list)
+
+
+_UPAZILA_RE = re.compile(r"\(([^()]+)\)\s*$")
+
+
+def parse_case_list(html: str | bytes) -> CaseListPage:
+    """Parse the ``/caseinfo`` search-results table into a :class:`CaseListPage`."""
+    soup = BeautifulSoup(html, "lxml")
+    court_name = clean_text(soup.select_one(".office-unit-name")) or None
+
+    entries: list[CaseListEntry] = []
+    table = soup.select_one("table")
+    if table is not None:
+        for row in table.select("tbody tr"):
+            cells = row.find_all("td")
+            if not cells:
+                continue
+
+            serial_no = clean_text(cells[0]) or None
+
+            case_type: str | None = None
+            case_number_raw = ""
+            upazila: str | None = None
+            if len(cells) > 1:
+                case_cell = cells[1]
+                type_span = case_cell.select_one(".color-black-blue")
+                case_type = clean_text(type_span) or None
+                case_number_raw = clean_text(case_cell)
+                upazila_match = _UPAZILA_RE.search(case_number_raw)
+                if upazila_match:
+                    upazila = upazila_match.group(1)
+                if case_type:
+                    case_number_raw = case_number_raw.replace(case_type, "", 1).strip(" -–—")
+
+            plaintiff = defendant = None
+            if len(cells) > 2:
+                parties = cells[2].select(".fs-2")
+                labels = [clean_text(p) for p in parties if clean_text(p)]
+                if labels:
+                    plaintiff = labels[0]
+                if len(labels) > 1:
+                    defendant = labels[-1]
+
+            detail_url: str | None = None
+            court_id = case_type_id = None
+            case_id: str | None = None
+            anchor = row.find("a", href=True)
+            if anchor:
+                detail_url = anchor["href"]
+                parsed = parse_case_detail_url(detail_url)
+                court_id = parsed["court_id"]
+                case_type_id = parsed["case_type_id"]
+                case_id = parsed["case_id"]
+
+            entries.append(
+                CaseListEntry(
+                    serial_no=serial_no,
+                    case_type=case_type,
+                    case_number=case_number_raw or None,
+                    case_number_raw=clean_text(cells[1]) if len(cells) > 1 else None,
+                    upazila=upazila,
+                    plaintiff=plaintiff,
+                    defendant=defendant,
+                    detail_url=detail_url,
+                    court_id=court_id,
+                    case_type_id=case_type_id,
+                    case_id=case_id,
+                )
+            )
+
+    return CaseListPage(court_name=court_name, entries=entries)
+
+
+def parse_case_detail_url(url: str) -> dict[str, Any]:
+    """Extract ``court_id``/``case_type_id``/``case_id`` from a case detail link."""
+    query = parse_qs(urlparse(url).query)
+    return {
+        "court_id": _int_or_none((query.get("courtId") or [None])[0]),
+        "case_type_id": _int_or_none((query.get("case_type") or [None])[0]),
+        "case_id": (query.get("id") or [None])[0],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Single case detail page (/caseinfo?courtId=&case_type=&id=)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CaseDetailField:
+    label: str
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
+class CaseDetail:
+    court_name: str | None = None
+    fields: dict[str, str] = field(default_factory=dict)
+    sections: dict[str, dict[str, str]] = field(default_factory=dict)
+    raw_text: str = ""
+
+
+def parse_case_detail(html: str | bytes) -> CaseDetail:
+    """Best-effort parse of a case detail page.
+
+    The detail page has no stable id/class contract, so this extracts the court
+    name, then harvests label/value pairs from two-column table rows and
+    description lists, grouping them under any single-cell section headers.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    court_name = clean_text(soup.select_one(".office-unit-name")) or None
+
+    fields: dict[str, str] = {}
+    sections: dict[str, dict[str, str]] = {}
+    current_section: dict[str, str] | None = None
+    current_title: str | None = None
+
+    for table in soup.select("table.table, table"):
+        for row in table.find_all("tr"):
+            cells = row.find_all(["th", "td"])
+            texts = [clean_text(cell) for cell in cells]
+            non_empty = [t for t in texts if t]
+
+            if len(cells) == 1 and non_empty:
+                # Single-cell row -> section header.
+                current_title = non_empty[0]
+                current_section = sections.setdefault(current_title, {})
+                continue
+
+            if len(texts) >= 2:
+                label, value = texts[0], " ".join(texts[1:]).strip()
+                if label:
+                    target = current_section if current_section is not None else fields
+                    target.setdefault(label, value)
+
+    for dl in soup.find_all("dl"):
+        terms = dl.find_all("dt")
+        definitions = dl.find_all("dd")
+        for term, definition in zip(terms, definitions):
+            label = clean_text(term)
+            if label:
+                fields.setdefault(label, clean_text(definition))
+
+    return CaseDetail(
+        court_name=court_name,
+        fields=fields,
+        sections=sections,
+        raw_text=clean_text(soup.get_text(" ")),
+    )
