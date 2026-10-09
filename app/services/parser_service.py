@@ -29,6 +29,8 @@ from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup, Tag
 
+from app.schemas import CaseKind, ParsedCaseNumber
+
 __all__ = [
     "bn_to_en_digits",
     "en_to_bn_digits",
@@ -52,6 +54,9 @@ __all__ = [
     "CaseDetail",
     "parse_case_detail",
     "parse_case_detail_url",
+    "parse_case_number",
+    "parse_case_numbers",
+    "normalize_case_number",
 ]
 
 # ---------------------------------------------------------------------------
@@ -508,3 +513,177 @@ def parse_case_detail(html: str | bytes) -> CaseDetail:
         sections=sections,
         raw_text=clean_text(soup.get_text(" ")),
     )
+
+
+# ---------------------------------------------------------------------------
+# Case-number parsing engine
+# ---------------------------------------------------------------------------
+#
+# Recognises Bangladesh case numbers such as ``844/2023``, ``সি.আর. ৮৪৪/২০২৩``,
+# ``জি. আর. মামলা - ১৩৭/২০২৬`` and ``Civil Suit No. 45/2021`` in both English
+# and Bengali numerals, and maps the prefix to a canonical form + case kind.
+
+# ``serial/year`` core, e.g. ``844/2023`` or ``১৩৭/২০২৬``.
+_CASE_NUMBER_RE = re.compile(r"(?P<serial>[\d০-৯]{1,6})\s*[/\\]\s*(?P<year>[\d০-৯]{2,4})")
+
+# Normalised-prefix alias -> (canonical prefix, kind).
+_PREFIX_ALIASES: dict[str, tuple[str, CaseKind]] = {
+    "cr": ("CR", CaseKind.CR),
+    "সিআর": ("CR", CaseKind.CR),
+    "criminarule": ("CR", CaseKind.CR),
+    "gr": ("GR", CaseKind.GR),
+    "জিআর": ("GR", CaseKind.GR),
+    "civil": ("CIVIL", CaseKind.CIVIL),
+    "সিভিল": ("CIVIL", CaseKind.CIVIL),
+    "দেওয়ানি": ("CIVIL", CaseKind.CIVIL),
+    "দেওয়ানী": ("CIVIL", CaseKind.CIVIL),
+    "criminal": ("CRIMINAL", CaseKind.CRIMINAL),
+    "ফৌজদারি": ("CRIMINAL", CaseKind.CRIMINAL),
+    "ফৌজদারী": ("CRIMINAL", CaseKind.CRIMINAL),
+    "misc": ("MISC", CaseKind.UNKNOWN),
+    "মিসকেস": ("MISC", CaseKind.UNKNOWN),
+    "writ": ("WRIT", CaseKind.UNKNOWN),
+    "রিট": ("WRIT", CaseKind.UNKNOWN),
+    "appeal": ("APPEAL", CaseKind.UNKNOWN),
+    "আপিল": ("APPEAL", CaseKind.UNKNOWN),
+    "family": ("FAMILY", CaseKind.CIVIL),
+    "পারিবারিক": ("FAMILY", CaseKind.CIVIL),
+}
+
+# Filler words stripped from the end of a prefix, e.g. ``জি. আর. মামলা``.
+_TRAILING_FILLER = re.compile(
+    r"(?:মামলা|মোকদ্দমা|অভিযোগ|নং|নম্বর|case|suit|no|number|mokaddama)+$"
+)
+
+# Keyword fallbacks when there is no recognisable prefix.
+_KEYWORD_KINDS: tuple[tuple[str, CaseKind], ...] = (
+    ("সি.আর", CaseKind.CR),
+    ("সি আর", CaseKind.CR),
+    ("জি.আর", CaseKind.GR),
+    ("জি আর", CaseKind.GR),
+    ("ফৌজদারি", CaseKind.CRIMINAL),
+    ("ফৌজদারী", CaseKind.CRIMINAL),
+    ("দেওয়ানি", CaseKind.CIVIL),
+    ("দেওয়ানী", CaseKind.CIVIL),
+    ("criminal", CaseKind.CRIMINAL),
+    ("civil", CaseKind.CIVIL),
+)
+
+
+def _normalize_prefix(raw: str) -> str:
+    """Reduce a prefix string to a comparable key (no punctuation/space/filler)."""
+    # Drop only separators/punctuation; keep Bengali letters *and* vowel signs.
+    key = re.sub(r"[\s.\-–—:।,]+", "", raw).casefold()
+    return _TRAILING_FILLER.sub("", key)
+
+
+def _match_prefix(key: str) -> tuple[str, CaseKind] | None:
+    if not key:
+        return None
+    if key in _PREFIX_ALIASES:
+        return _PREFIX_ALIASES[key]
+    # Prefer a recognised type token at the end (e.g. "এইআদেশেসিআর" -> "সিআর"),
+    # then at the start (e.g. "civilsuit" -> "civil"), longest alias first.
+    for matcher in (str.endswith, str.startswith):
+        for alias in sorted(_PREFIX_ALIASES, key=len, reverse=True):
+            if matcher(key, alias):
+                return _PREFIX_ALIASES[alias]
+    return None
+
+
+def _kind_from_keywords(text: str) -> CaseKind:
+    lowered = text.casefold()
+    for keyword, kind in _KEYWORD_KINDS:
+        if keyword.casefold() in lowered:
+            return kind
+    return CaseKind.UNKNOWN
+
+
+def _expand_two_digit_year(year: int) -> int:
+    """Expand a 2-digit case year (``99`` -> 1999, ``23`` -> 2023)."""
+    if year >= 100:
+        return year
+    candidate = 2000 + year
+    # A 20xx reading in the future means the case predates 2000.
+    return 1900 + year if candidate > date.today().year + 1 else candidate
+
+
+def parse_case_number(text: str | None) -> ParsedCaseNumber:
+    """Parse a single raw case number into a :class:`ParsedCaseNumber`.
+
+    Never raises: unparseable input yields a low-confidence result with an
+    empty/echoed normalized form so callers can still echo what was searched.
+    """
+    raw = clean_text(text) if text else ""
+    if not raw:
+        return ParsedCaseNumber(raw="", normalized="", kind=CaseKind.UNKNOWN, confidence=0.0)
+
+    ascii_text = bn_to_en_digits(raw)
+    match = _CASE_NUMBER_RE.search(ascii_text)
+    if not match:
+        return ParsedCaseNumber(
+            raw=raw,
+            normalized=raw,
+            kind=_kind_from_keywords(raw),
+            confidence=0.0,
+        )
+
+    serial = int(match.group("serial"))
+    year = _expand_two_digit_year(int(match.group("year")))
+
+    prefix_text = raw[: match.start()]
+    alias = _match_prefix(_normalize_prefix(prefix_text))
+    if alias is not None:
+        canonical, kind = alias
+        confidence = 1.0 if 1900 <= year <= 2100 else 0.7
+    else:
+        canonical = None
+        kind = _kind_from_keywords(raw)
+        confidence = 0.6 if not prefix_text.strip() else 0.5
+
+    normalized = f"{canonical + '-' if canonical else ''}{serial}/{year}"
+    return ParsedCaseNumber(
+        raw=raw,
+        normalized=normalized,
+        kind=kind,
+        prefix=canonical,
+        serial=serial,
+        year=year,
+        confidence=confidence,
+    )
+
+
+def parse_case_numbers(text: str | None) -> list[ParsedCaseNumber]:
+    """Extract every case number found in a block of text (e.g. an order)."""
+    if not text:
+        return []
+    ascii_text = bn_to_en_digits(text)
+    results: list[ParsedCaseNumber] = []
+    prev_end = 0
+    for match in _CASE_NUMBER_RE.finditer(ascii_text):
+        # Only the text between the previous number and this one can hold the
+        # prefix, which keeps unrelated leading words out of the match.
+        segment = text[prev_end : match.start()]
+        alias = _match_prefix(_normalize_prefix(segment))
+        canonical = alias[0] if alias else None
+        kind = alias[1] if alias else _kind_from_keywords(segment)
+        serial = int(match.group("serial"))
+        year = _expand_two_digit_year(int(match.group("year")))
+        results.append(
+            ParsedCaseNumber(
+                raw=text[match.start() : match.end()],
+                normalized=f"{canonical + '-' if canonical else ''}{serial}/{year}",
+                kind=kind,
+                prefix=canonical,
+                serial=serial,
+                year=year,
+                confidence=1.0 if alias else 0.5,
+            )
+        )
+        prev_end = match.end()
+    return results
+
+
+def normalize_case_number(text: str | None) -> str:
+    """Return the canonical case-number string (e.g. ``CR-844/2023``)."""
+    return parse_case_number(text).normalized

@@ -284,3 +284,104 @@ class Page(BaseModel, Generic[T]):
     page: int
     size: int
     pages: int
+
+
+# ---------------------------------------------------------------------------
+# Case lookup (citizen-facing case-number search)
+# ---------------------------------------------------------------------------
+
+
+class Language(str, Enum):
+    EN = "en"
+    BN = "bn"
+
+
+class CaseKind(str, Enum):
+    CIVIL = "civil"
+    CRIMINAL = "criminal"
+    CR = "cr"  # Criminal Revision / Rule
+    GR = "gr"  # General Register (police-reported criminal case)
+    UNKNOWN = "unknown"
+
+
+class PartyRole(str, Enum):
+    PLAINTIFF = "plaintiff"
+    DEFENDANT = "defendant"
+    PETITIONER = "petitioner"
+    RESPONDENT = "respondent"
+    ACCUSED = "accused"
+    COMPLAINANT = "complainant"
+    UNKNOWN = "unknown"
+
+
+class RedactionType(str, Enum):
+    PHONE = "phone"
+    NID = "nid"
+    EMAIL = "email"
+    ADDRESS = "address"
+    BANK_ACCOUNT = "bank_account"
+
+
+class ParsedCaseNumber(BaseModel):
+    """Structured form of a raw case number like ``সি.আর. ৮৪৪/২০২৩``."""
+
+    raw: str
+    normalized: str
+    kind: CaseKind = CaseKind.UNKNOWN
+    prefix: str | None = None
+    serial: int | None = None
+    year: int | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class Party(BaseModel):
+    name: str
+    role: PartyRole = PartyRole.UNKNOWN
+    redacted: bool = False
+
+
+class PrivacyReport(BaseModel):
+    """Summary of PII masking applied to a response (no original values stored)."""
+
+    applied: bool = False
+    total: int = 0
+    by_type: dict[str, int] = Field(default_factory=dict)
+
+
+class CaseSummary(BaseModel):
+    case_number: str
+    normalized_number: str
+    kind: CaseKind = CaseKind.UNKNOWN
+    year: int | None = None
+    court: str | None = None
+    court_id: int | None = None
+    subject: str | None = None
+    parties: list[Party] = Field(default_factory=list)
+    status: str | None = None
+    next_hearing_date: date | None = None
+    last_order_summary: str | None = None
+    source_url: str | None = None
+    fetched_at: datetime | None = None
+
+
+class CaseLookupRequest(BaseModel):
+    case_number: str = Field(min_length=1, max_length=64)
+    court_id: int | None = None
+    court: str | None = Field(default=None, max_length=200)
+    language: Language = Language.BN
+    force_refresh: bool = False
+
+
+class CaseLookupResponse(BaseModel):
+    found: bool
+    cached: bool = False
+    # live | fallback | cache
+    source: str = "live"
+    language: Language = Language.BN
+    parsed: ParsedCaseNumber | None = None
+    summary: CaseSummary | None = None
+    explanation: str | None = None
+    next_steps: list[str] = Field(default_factory=list)
+    privacy: PrivacyReport = Field(default_factory=PrivacyReport)
+    message: str | None = None
+    fetched_at: datetime | None = None

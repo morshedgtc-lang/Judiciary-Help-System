@@ -171,7 +171,7 @@ class JudiciaryScraper:
             self._throttle()
             try:
                 response = client.get(url, params=params)
-            except httpx.TimeoutException as exc:
+            except httpx.TimeoutException:
                 last_error = ScraperTimeout(f"Timed out requesting {url}")
                 logger.warning("Timeout (attempt %d/%d): %s", attempt + 1, self.max_retries + 1, url)
             except httpx.HTTPError as exc:

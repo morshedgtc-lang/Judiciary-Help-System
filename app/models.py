@@ -201,3 +201,52 @@ class TicketComment(Base):
 
     ticket: Mapped[HelpTicket] = relationship(back_populates="comments")
     author: Mapped[User] = relationship(back_populates="comments")
+
+
+# ---------------------------------------------------------------------------
+# Case-lookup cache
+# ---------------------------------------------------------------------------
+
+
+class CaseQueryCache(Base):
+    """Cached result of a citizen case-number lookup.
+
+    Repeat lookups are served from here so we never spam the government servers
+    (avoiding rate limits / IP blocks), and so results remain available when the
+    upstream portal is down. ``query_key`` is the normalized case number plus an
+    optional court scope.
+    """
+
+    __tablename__ = "case_query_cache"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    query_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    case_number: Mapped[str] = mapped_column(String(64), index=True)
+    normalized_number: Mapped[str] = mapped_column(String(64), index=True)
+    court_id: Mapped[int | None] = mapped_column(index=True)
+    # found | not_found | error
+    status: Mapped[str] = mapped_column(String(16), default="found", index=True)
+    # live | fallback
+    source: Mapped[str] = mapped_column(String(16), default="live")
+    http_status: Mapped[int | None] = mapped_column()
+    payload: Mapped[str | None] = mapped_column(Text)  # serialized response JSON
+    hit_count: Mapped[int] = mapped_column(default=0)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+
+    @property
+    def is_fresh(self) -> bool:
+        """Whether this entry may still be served without re-fetching."""
+        if self.status == "error":
+            return False
+        if self.expires_at is None:
+            return True
+        return self.expires_at > datetime.utcnow()
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return (
+            f"<CaseQueryCache {self.query_key!r} status={self.status} "
+            f"hits={self.hit_count}>"
+        )
